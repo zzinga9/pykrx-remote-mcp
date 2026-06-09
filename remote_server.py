@@ -54,14 +54,20 @@ async def _kis_token() -> str:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.post(
                 f"{KIS_BASE}/oauth2/tokenP",
+                headers={"content-type": "application/json"},
                 json={
                     "grant_type": "client_credentials",
                     "appkey": KIS_APP_KEY,
                     "appsecret": KIS_APP_SECRET,
                 },
             )
-            r.raise_for_status()
-            d = r.json()
+        if r.status_code != 200:
+            raise RuntimeError(
+                f"KIS token {r.status_code} (domain={KIS_DOMAIN}, "
+                f"appkey_len={len(KIS_APP_KEY)}, secret_len={len(KIS_APP_SECRET)}): "
+                f"{r.text[:400]}"
+            )
+        d = r.json()
         _token["value"] = d["access_token"]
         _token["exp"] = now + int(d.get("expires_in", 86400))
         return _token["value"]
