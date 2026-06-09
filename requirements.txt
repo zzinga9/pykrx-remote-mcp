@@ -1,0 +1,3 @@
+pykrx-mcp
+uvicorn
+starlette
