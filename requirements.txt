@@ -1,3 +1,4 @@
 pykrx-mcp
 uvicorn
 starlette
+httpx
