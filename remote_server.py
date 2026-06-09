@@ -147,6 +147,81 @@ async def get_realtime_price(symbol: str) -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+
+@mcp.tool()
+async def get_us_realtime_price(symbol: str, exchange: str = "auto") -> dict:
+    """
+    미국 주식의 현재가를 조회합니다 (한국투자증권 KIS 해외주식 시세 API).
+
+    Args:
+        symbol: 미국 종목 티커 (예: "AAPL", "TSLA", "NVDA")
+        exchange: 거래소. "NAS"(나스닥), "NYS"(뉴욕), "AMS"(아멕스),
+                  또는 "auto"(기본값, 자동으로 세 거래소를 순서대로 탐색)
+
+    Returns:
+        현재가, 전일대비, 등락률, 거래량 등. 가격은 USD.
+        참고: KIS 해외주식 시세는 실시간 시세 미신청 시 약 15분 지연일 수 있습니다.
+    """
+    if not KIS_APP_KEY or not KIS_APP_SECRET:
+        return {"error": "KIS_APP_KEY/KIS_APP_SECRET 환경변수가 설정되지 않았습니다."}
+
+    sym = symbol.strip().upper()
+    excd = exchange.strip().upper()
+    exchanges = [excd] if excd in ("NAS", "NYS", "AMS") else ["NAS", "NYS", "AMS"]
+
+    def f(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
+
+    try:
+        token = await _kis_token()
+        last_raw = None
+        async with httpx.AsyncClient(timeout=15) as client:
+            for ex in exchanges:
+                headers = {
+                    "authorization": f"Bearer {token}",
+                    "appkey": KIS_APP_KEY,
+                    "appsecret": KIS_APP_SECRET,
+                    "tr_id": "HHDFS00000300",
+                    "custtype": "P",
+                }
+                params = {"AUTH": "", "EXCD": ex, "SYMB": sym}
+                r = await client.get(
+                    f"{KIS_BASE}/uapi/overseas-price/v1/quotations/price",
+                    headers=headers,
+                    params=params,
+                )
+                d = r.json()
+                last_raw = d
+                o = d.get("output") or {}
+                if d.get("rt_cd") == "0" and o.get("last") not in (None, "", "0", "0.0000"):
+                    sign = {"1": "\uc0c1\ud55c", "2": "\uc0c1\uc2b9", "3": "\ubcf4\ud569", "4": "\ud558\ub77d", "5": "\ud558\ud55c"}
+                    kst = datetime.timezone(datetime.timedelta(hours=9))
+                    excd_name = {"NAS": "\ub098\uc2a4\ub2e5", "NYS": "\ub274\uc695(NYSE)", "AMS": "\uc544\uba65\uc2a4"}
+                    return {
+                        "symbol": sym,
+                        "\uac70\ub798\uc18c": excd_name.get(ex, ex),
+                        "\ud604\uc7ac\uac00_USD": f(o.get("last")),
+                        "\uc804\uc77c\uc885\uac00_USD": f(o.get("base")),
+                        "\uc804\uc77c\ub300\ube44": f(o.get("diff")),
+                        "\ub4f1\ub77d": sign.get(o.get("sign"), o.get("sign")),
+                        "\ub4f1\ub77d\ub960": f(o.get("rate")),
+                        "\uac70\ub798\ub7c9": f(o.get("tvol")),
+                        "\uac70\ub798\ub300\uae08_USD": f(o.get("tamt")),
+                        "\uc870\ud68c\uc2dc\uac01_KST": datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S"),
+                        "\ub370\uc774\ud130\ucd9c\ucc98": "KIS \ud574\uc678\uc8fc\uc2dd (\uc2e4\uc2dc\uac04 \ubbf8\uc2e0\uccad \uc2dc \uc57d 15\ubd84 \uc9c0\uc5f0 \uac00\ub2a5)",
+                    }
+        return {
+            "error": f"'{sym}' \uc885\ubaa9\uc744 NAS/NYS/AMS\uc5d0\uc11c \ucc3e\uc9c0 \ubabb\ud588\uac70\ub098 \ub370\uc774\ud130\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.",
+            "rt_cd": (last_raw or {}).get("rt_cd"),
+            "msg": (last_raw or {}).get("msg1"),
+        }
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
 async def health(request):
     return PlainTextResponse("ok")
 
