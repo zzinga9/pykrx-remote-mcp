@@ -2,3 +2,4 @@ pykrx-mcp
 uvicorn
 starlette
 httpx
+tradingview-ta

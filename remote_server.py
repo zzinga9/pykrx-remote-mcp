@@ -222,6 +222,107 @@ async def get_us_realtime_price(symbol: str, exchange: str = "auto") -> dict:
         return {"error": f"{type(e).__name__}: {e}"}
 
 
+
+@mcp.tool()
+async def get_tradingview_analysis(symbol: str, exchange: str = "auto", interval: str = "1D") -> dict:
+    """
+    TradingView 기술적 분석(지표/매수·매도 시그널)을 조회합니다. (비공식 tradingview-ta)
+
+    RSI, MACD, 이동평균 등 지표 값과 매수/매도/중립 추천 신호를 반환합니다.
+    미국주식, 한국주식, 암호화폐, 외환 모두 지원합니다.
+
+    Args:
+        symbol: 심볼. 미국주식 "AAPL"/"TSLA", 한국주식 "005930",
+                암호화폐 "BTCUSDT", 외환 "EURUSD" 등.
+        exchange: 거래소. "auto"(기본, 자동 판별), 또는
+                  "NASDAQ"/"NYSE"/"AMEX"/"KRX"/"BINANCE"/"FX_IDC" 등 직접 지정.
+        interval: 시간 간격. "1m","5m","15m","30m","1h","2h","4h","1D"(기본),"1W","1M".
+
+    Returns:
+        추천(매수/매도/중립), 오실레이터/이동평균 추천, RSI/MACD/이동평균 등 지표값.
+    """
+    try:
+        from tradingview_ta import TA_Handler, Interval
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"tradingview_ta 로드 실패: {e}"}
+
+    imap = {
+        "1m": Interval.INTERVAL_1_MINUTE, "5m": Interval.INTERVAL_5_MINUTES,
+        "15m": Interval.INTERVAL_15_MINUTES, "30m": Interval.INTERVAL_30_MINUTES,
+        "1h": Interval.INTERVAL_1_HOUR, "2h": Interval.INTERVAL_2_HOURS,
+        "4h": Interval.INTERVAL_4_HOURS, "1d": Interval.INTERVAL_1_DAY,
+        "1w": Interval.INTERVAL_1_WEEK, "1mo": Interval.INTERVAL_1_MONTH,
+        "1month": Interval.INTERVAL_1_MONTH,
+    }
+    iv = imap.get(interval.lower(), Interval.INTERVAL_1_DAY)
+
+    sym = symbol.strip().upper()
+    ex = exchange.strip().upper()
+    if ex not in ("AUTO", ""):
+        if ex == "KRX":
+            cands = [("korea", ex)]
+        elif ex in ("BINANCE", "BYBIT", "KUCOIN", "COINBASE", "OKX"):
+            cands = [("crypto", ex)]
+        elif ex in ("FX_IDC", "OANDA", "FOREXCOM"):
+            cands = [("forex", ex)]
+        else:
+            cands = [("america", ex)]
+    elif sym.isdigit() and len(sym) == 6:
+        cands = [("korea", "KRX")]
+    elif sym.endswith(("USDT", "USDC", "BTC", "ETH")) and len(sym) > 5:
+        cands = [("crypto", "BINANCE")]
+    elif len(sym) == 6 and sym.isalpha():
+        cands = [("forex", "FX_IDC"), ("america", "NASDAQ")]
+    else:
+        cands = [("america", "NASDAQ"), ("america", "NYSE"), ("america", "AMEX")]
+
+    def run():
+        last = None
+        for scr, exc in cands:
+            try:
+                h = TA_Handler(symbol=sym, screener=scr, exchange=exc, interval=iv)
+                return scr, exc, h.get_analysis()
+            except Exception as e:  # noqa: BLE001
+                last = e
+        raise last or RuntimeError("no analysis")
+
+    try:
+        scr, exc, a = await asyncio.to_thread(run)
+    except Exception as e:  # noqa: BLE001
+        return {"error": f"분석 실패: {type(e).__name__}: {e}", "tried": cands}
+
+    ind = a.indicators or {}
+
+    def g(k):
+        v = ind.get(k)
+        return round(v, 4) if isinstance(v, (int, float)) else v
+
+    kst = datetime.timezone(datetime.timedelta(hours=9))
+    return {
+        "symbol": sym,
+        "거래소": exc,
+        "시장": scr,
+        "간격": interval,
+        "추천": a.summary.get("RECOMMENDATION"),
+        "매수신호수": a.summary.get("BUY"),
+        "매도신호수": a.summary.get("SELL"),
+        "중립": a.summary.get("NEUTRAL"),
+        "오실레이터_추천": a.oscillators.get("RECOMMENDATION"),
+        "이동평균_추천": a.moving_averages.get("RECOMMENDATION"),
+        "종가": g("close"),
+        "RSI": g("RSI"),
+        "MACD": g("MACD.macd"),
+        "MACD_signal": g("MACD.signal"),
+        "Stoch_K": g("Stoch.K"),
+        "ADX": g("ADX"),
+        "EMA20": g("EMA20"),
+        "SMA50": g("SMA50"),
+        "SMA200": g("SMA200"),
+        "조회시각_KST": datetime.datetime.now(kst).strftime("%Y-%m-%d %H:%M:%S"),
+        "데이터출처": "TradingView (비공식, tradingview-ta)",
+    }
+
+
 async def health(request):
     return PlainTextResponse("ok")
 
