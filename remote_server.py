@@ -235,7 +235,8 @@ async def get_tradingview_analysis(symbol: str, exchange: str = "auto", interval
         symbol: 심볼. 미국주식 "AAPL"/"TSLA", 한국주식 "005930",
                 암호화폐 "BTCUSDT", 외환 "EURUSD" 등.
         exchange: 거래소. "auto"(기본, 자동 판별), 또는
-                  "NASDAQ"/"NYSE"/"AMEX"/"KRX"/"BINANCE"/"FX_IDC" 등 직접 지정.
+                  "NASDAQ"/"NYSE"/"AMEX"/"KRX"/"BINANCE"/"FX_IDC"/"CME" 등 직접 지정.
+                  나스닥 선물은 symbol="NQ1!", exchange="CME" (또는 자동: "NQ1!").
         interval: 시간 간격. "1m","5m","15m","30m","1h","2h","4h","1D"(기본),"1W","1M".
 
     Returns:
@@ -265,10 +266,14 @@ async def get_tradingview_analysis(symbol: str, exchange: str = "auto", interval
             cands = [("crypto", ex)]
         elif ex in ("FX_IDC", "OANDA", "FOREXCOM"):
             cands = [("forex", ex)]
+        elif ex in ("CME", "CME_MINI", "CBOT", "CBOT_MINI", "NYMEX", "COMEX", "EUREX", "ICEUS"):
+            cands = [("futures", ex)]
         else:
             cands = [("america", ex)]
     elif sym.isdigit() and len(sym) == 6:
         cands = [("korea", "KRX")]
+    elif sym.endswith("!"):
+        cands = [("futures", "CME")]
     elif sym.endswith(("USDT", "USDC", "BTC", "ETH")) and len(sym) > 5:
         cands = [("crypto", "BINANCE")]
     elif len(sym) == 6 and sym.isalpha():
