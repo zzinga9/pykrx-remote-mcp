@@ -643,9 +643,15 @@ async def get_investor_trading(symbol: str, fromdate: str = "", todate: str = ""
         fromdate = dt.strftime("%Y%m%d")
 
     try:
+        # 투자자별 순매수 금액 (기관/외국인/개인 등 구분)
         df = await asyncio.to_thread(
-            stock.get_market_trading_volume_by_date, fromdate, todate, symbol
+            stock.get_market_trading_value_by_investor, fromdate, todate, symbol
         )
+        if df is None or df.empty:
+            # 폴백: 투자자별 거래량 시도
+            df = await asyncio.to_thread(
+                stock.get_market_trading_volume_by_investor, fromdate, todate, symbol
+            )
         if df is None or df.empty:
             return {"error": f"{symbol} 투자자별 거래 데이터가 없습니다."}
 
@@ -737,7 +743,7 @@ async def get_top_movers(date: str = "", top_n: int = 20, market: str = "KOSPI",
         date:      기준일 "YYYYMMDD" (기본: 가장 최근 거래일)
         top_n:     조회할 종목 수 (기본 20, 최대 50)
         market:    "KOSPI"(기본), "KOSDAQ", "KONEX"
-        direction: "up"(상승" 기본) 또는 "down"(하락)
+        direction: "up"(상승, 기본) 또는 "down"(하락)
 
     Returns:
         종목코드, 종목명, 현재가, 등락률, 거래량 등
@@ -834,6 +840,30 @@ async def get_foreign_holding(symbol: str, fromdate: str = "", todate: str = "")
             "데이터출처":   "pykrx (한국거래소)",
         }
     except Exception as e:
+        # JSONDecodeError 등 KRX API 파싱 오류 → 단일 날짜 폴백
+        try:
+            today_str = datetime.datetime.now(KST).strftime("%Y%m%d")
+            df_tick = await asyncio.to_thread(
+                stock.get_exhaustion_rates_of_foreign_investment_by_ticker,
+                today_str
+            )
+            if df_tick is not None and not df_tick.empty and symbol in df_tick.index:
+                row = df_tick.loc[[symbol]].reset_index()
+                rows = [
+                    {str(c): (r[c].item() if hasattr(r[c], "item") else r[c])
+                     for c in row.columns}
+                    for _, r in row.iterrows()
+                ]
+                return {
+                    "symbol":       symbol,
+                    "기간":         today_str,
+                    "note":         f"날짜범위 조회 오류({type(e).__name__}) — 오늘 기준 스냅샷으로 대체",
+                    "데이터":       rows,
+                    "조회시각_KST": _now_kst(),
+                    "데이터출처":   "pykrx (한국거래소)",
+                }
+        except Exception:
+            pass
         return {"error": f"{type(e).__name__}: {e}"}
 
 
@@ -943,7 +973,7 @@ async def get_fred_indicator(series_id: str, count: int = 12) -> dict:
 
 # ====================================================================
 # B: 경제지표 - ECOS (한국은행)
-# ============================================================================================
+# ====================================================================
 
 ECOS_SERIES_MAP = {
     "base_rate":    ("722Y001", "0101000",  "한국 기준금리 (%)"),
@@ -965,7 +995,7 @@ async def get_ecos_indicator(series_id: str, count: int = 12) -> dict:
     한국은행 경제통계시스템(ECOS)에서 거시경제 지표를 조회합니다.
 
     Args:
-        series_id: ECOS 단축명 또는 "통계코드/항목코드" 형식.
+        series_id: ECOS 단축명 또는 "통계코드 항목코드" 형식.
             단축명: base_rate, cpi, gdp, m2, usd_krw, trade_balance,
                    unemployment, production, 10y_yield, 3y_yield
             직접 입력: "722Y001/0101000" (통계코드/항목코드)
@@ -1123,7 +1153,7 @@ async def get_dart_disclosure(ticker: str, count: int = 10) -> dict:
             "symbol":       ticker,
             "corp_code":    corp_code,
             "공시수":       len(disclosures),
-            "공시목록":      disclosures,
+            "공시목록":     disclosures,
             "조회시각_KST": _now_kst(),
             "데이터출처":   "DART (금융감독원 전자공시시스템)",
         }
@@ -1137,12 +1167,12 @@ async def get_dart_financial(ticker: str, year: int = 0, report_type: str = "110
     DART에서 특정 상장사의 재무제표 데이터를 조회합니다.
 
     Args:
-        ticker:      6리 종목코드 (예: "005930" 삼성전자)
-        year:         사업연도 (기본: 전년도, 예: 2023)
+        ticker:      6자리 종목코드 (예: "005930" 삼성전자)
+        year:        사업연도 (기본: 전년도, 예: 2023)
         report_type: "11011"(사업보고서, 기본), "11012"(반기보고서), "11013"(1분기), "11014"(3분기)
 
     Returns:
-        매출액, 영업읷읷 비쪤, 당기순이익 등 주요 재무지표
+        매출액, 영업이익, 당기순이익 등 주요 재무지표
 
     주의: DART_API_KEY 환경변수가 필요합니다.
     """
