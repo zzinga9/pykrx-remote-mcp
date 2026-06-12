@@ -701,13 +701,16 @@ async def get_top_market_cap(date: str = "", top_n: int = 20, market: str = "KOS
     top_n = min(max(1, top_n), 100)
 
     try:
-        _bd = await asyncio.to_thread(stock.get_nearest_business_day_in_a_week, date)
-        date = _bd or date
+        try:
+            _bd = await asyncio.to_thread(stock.get_nearest_business_day_in_a_week, date)
+            date = _bd or date
+        except Exception:
+            pass
         df = await asyncio.to_thread(
             stock.get_market_cap_by_ticker, date, market=market
         )
         if df is None or df.empty:
-            return {"error": f"{date} {market} 시가총액 데이터가 없습니다."}
+            return {"error": f"{date} {market} 시가총액 스냅샷이 비어 있습니다. (KRX가 클라우드 IP에 시장 전체 스냅샷을 제공하지 않는 제약 — 종목별 시세/OHLCV 조회는 정상입니다)"}
 
         df = df.sort_values("시가총액", ascending=False).head(top_n).reset_index()
         rows = []
@@ -757,13 +760,16 @@ async def get_top_movers(date: str = "", top_n: int = 20, market: str = "KOSPI",
     top_n = min(max(1, top_n), 50)
 
     try:
-        _bd = await asyncio.to_thread(stock.get_nearest_business_day_in_a_week, date)
-        date = _bd or date
+        try:
+            _bd = await asyncio.to_thread(stock.get_nearest_business_day_in_a_week, date)
+            date = _bd or date
+        except Exception:
+            pass
         df = await asyncio.to_thread(
             stock.get_market_ohlcv_by_ticker, date, market=market
         )
         if df is None or df.empty:
-            return {"error": f"{date} {market} 데이터가 없습니다."}
+            return {"error": f"{date} {market} 등락률 스냅샷이 비어 있습니다. (KRX가 클라우드 IP에 시장 전체 스냅샷을 제공하지 않는 제약 — 종목별 시세/OHLCV 조회는 정상입니다)"}
 
         ascending = direction.lower() == "down"
         df = df.sort_values("등락률", ascending=ascending).head(top_n).reset_index()
@@ -1399,7 +1405,7 @@ async def get_bond_yield(fromdate: str = "", todate: str = "") -> dict:
         from pykrx import bond
 
         df = await asyncio.to_thread(
-            bond.get_otc_treasury_yields, fromdate, todate
+            bond.get_otc_treasury_yields, todate
         )
         if df is None or df.empty:
             return {"error": "국채 수익률 데이터가 없습니다."}
@@ -1416,9 +1422,9 @@ async def get_bond_yield(fromdate: str = "", todate: str = "") -> dict:
             rows.append(entry)
 
         return {
-            "기간":         f"{fromdate} ~ {todate}",
+            "기준일":       todate,
             "데이터":       rows,
-            "설명":         "한국 국채 OTC 수익률 (3/5/10/20/30년)",
+            "설명":         "한국 국채 OTC 수익률 (3/5/10/20/30년, 단일일 스냅샷)",
             "조회시각_KST": _now_kst(),
             "데이터출처":   "pykrx bond (한국거래소)",
         }
