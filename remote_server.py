@@ -701,6 +701,8 @@ async def get_top_market_cap(date: str = "", top_n: int = 20, market: str = "KOS
     top_n = min(max(1, top_n), 100)
 
     try:
+        _bd = await asyncio.to_thread(stock.get_nearest_business_day_in_a_week, date)
+        date = _bd or date
         df = await asyncio.to_thread(
             stock.get_market_cap_by_ticker, date, market=market
         )
@@ -755,6 +757,8 @@ async def get_top_movers(date: str = "", top_n: int = 20, market: str = "KOSPI",
     top_n = min(max(1, top_n), 50)
 
     try:
+        _bd = await asyncio.to_thread(stock.get_nearest_business_day_in_a_week, date)
+        date = _bd or date
         df = await asyncio.to_thread(
             stock.get_market_ohlcv_by_ticker, date, market=market
         )
@@ -1127,6 +1131,8 @@ async def get_dart_disclosure(ticker: str, count: int = 10) -> dict:
                 params={
                     "crtfc_key": DART_API_KEY,
                     "corp_code": corp_code,
+                    "bgn_de": (datetime.datetime.now(KST) - datetime.timedelta(days=180)).strftime("%Y%m%d"),
+                    "end_de": datetime.datetime.now(KST).strftime("%Y%m%d"),
                     "page_no":   "1",
                     "page_count": str(count),
                 },
@@ -1393,7 +1399,7 @@ async def get_bond_yield(fromdate: str = "", todate: str = "") -> dict:
         from pykrx import bond
 
         df = await asyncio.to_thread(
-            bond.get_otc_treasury_yields_in_dates, fromdate, todate
+            bond.get_otc_treasury_yields, fromdate, todate
         )
         if df is None or df.empty:
             return {"error": "국채 수익률 데이터가 없습니다."}
@@ -1685,7 +1691,7 @@ async def get_stock_news(symbol: str, count: int = 10) -> dict:
         뉴스 제목, 날짜, 언론사, 링크 리스트
     """
     count = min(max(1, count), 20)
-    url = f"https://finance.naver.com/item/news_news.nhn?code={symbol}&page=1&sm=title_entity_id.basic&clusterId="
+    url = f"https://finance.naver.com/item/news_news.naver?code={symbol}&page=1&sm=title_entity_id.basic&clusterId="
 
     try:
         headers = {
@@ -1704,7 +1710,7 @@ async def get_stock_news(symbol: str, count: int = 10) -> dict:
         content = r.text
 
         # 뉴스 제목과 링크 추출
-        pattern = r'<a[^>]+href="(/item/news_read\.nhn\?[^"]+)"[^>]*>\s*([^<]+?)\s*</a>'
+        pattern = r'<a[^>]+href="(/item/news_read\.(?:nhn|naver)\?[^"]+)"[^>]*>\s*([^<]+?)\s*</a>'
         matches = re.findall(pattern, content)
 
         # 날짜 및 언론사 추출
