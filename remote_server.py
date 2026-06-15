@@ -1045,7 +1045,7 @@ async def get_ecos_indicator(series_id: str, count: int = 12) -> dict:
     try:
         url = (
             f"https://ecos.bok.or.kr/api/StatisticSearch"
-            f"/{ECOS_API_KEY}/json/kr/1/{count + 10}"
+            f"/{ECOS_API_KEY}/json/kr/1/1000"
             f"/{stat_code}/M/{start_date}/{end_date}/{item_code}"
         )
         async with httpx.AsyncClient(timeout=20) as client:
@@ -1060,7 +1060,7 @@ async def get_ecos_indicator(series_id: str, count: int = 12) -> dict:
         if err and err.get("CODE", "").startswith("INFO-"):
             url2 = (
                 f"https://ecos.bok.or.kr/api/StatisticSearch"
-                f"/{ECOS_API_KEY}/json/kr/1/{count + 10}"
+                f"/{ECOS_API_KEY}/json/kr/1/1000"
                 f"/{stat_code}/A/{start_date[:4]}/{end_date[:4]}/{item_code}"
             )
             async with httpx.AsyncClient(timeout=20) as client:
