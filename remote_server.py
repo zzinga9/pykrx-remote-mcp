@@ -684,52 +684,70 @@ async def get_investor_trading(symbol: str, fromdate: str = "", todate: str = ""
 @mcp.tool()
 async def get_top_market_cap(date: str = "", top_n: int = 20, market: str = "KOSPI") -> dict:
     """
-    시가총액 상위 종목 순위를 조회합니다 (pykrx).
+    시가총액 상위 종목 순위를 조회합니다 (KIS 한국투자증권 순위분석).
 
     Args:
-        date:   기준일 "YYYYMMDD" (기본: 가장 최근 거래일)
-        top_n:  조회할 상위 종목 수 (기본 20, 최대 100)
-        market: "KOSPI"(기본), "KOSDAQ", "KONEX"
+        date:   호환용 인자 (무시됨 — KIS는 실시간 스냅샷 제공)
+        top_n:  조회할 상위 종목 수 (기본 20, 최대 30)
+        market: "KOSPI"(기본), "KOSDAQ", "전체"
 
     Returns:
-        종목코드, 종목명, 시가총액, 현재가, 등락률, 거래량 등 상위 N개
+        순위, 종목코드, 종목명, 현재가, 등락률, 시가총액(억원), 거래량
     """
-    import pykrx.stock as stock
-
-    if not date:
-        date = datetime.datetime.now(KST).strftime("%Y%m%d")
-    top_n = min(max(1, top_n), 100)
-
+    if not KIS_APP_KEY or not KIS_APP_SECRET:
+        return {"error": "KIS_APP_KEY/KIS_APP_SECRET 환경변수가 설정되지 않았습니다."}
+    top_n = min(max(1, top_n), 30)
+    iscd = {"KOSPI": "0001", "KOSDAQ": "1001", "전체": "0000", "ALL": "0000"}.get(
+        (market or "KOSPI").upper() if (market or "").upper() not in ("전체",) else "전체", "0001"
+    )
+    if market == "전체":
+        iscd = "0000"
     try:
-        try:
-            _bd = await asyncio.to_thread(stock.get_nearest_business_day_in_a_week, date)
-            date = _bd or date
-        except Exception:
-            pass
-        df = await asyncio.to_thread(
-            stock.get_market_cap_by_ticker, date, market=market
-        )
-        if df is None or df.empty:
-            return {"error": f"{date} {market} 시가총액 스냅샷이 비어 있습니다. (KRX가 클라우드 IP에 시장 전체 스냅샷을 제공하지 않는 제약 — 종목별 시세/OHLCV 조회는 정상입니다)"}
-
-        df = df.sort_values("시가총액", ascending=False).head(top_n).reset_index()
+        token = await _kis_token()
+        headers = {
+            "authorization": f"Bearer {token}",
+            "appkey": KIS_APP_KEY,
+            "appsecret": KIS_APP_SECRET,
+            "tr_id": "FHPST01740000",
+            "custtype": "P",
+        }
+        params = {
+            "fid_cond_mrkt_div_code": "J",
+            "fid_cond_scr_div_code": "20174",
+            "fid_div_cls_code": "0",
+            "fid_input_iscd": iscd,
+            "fid_trgt_cls_code": "0",
+            "fid_trgt_exls_cls_code": "0",
+            "fid_input_price_1": "",
+            "fid_input_price_2": "",
+            "fid_vol_cnt": "",
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{KIS_BASE}/uapi/domestic-stock/v1/ranking/market-cap",
+                headers=headers, params=params,
+            )
+        d = r.json()
+        out = d.get("output") or []
+        if not out:
+            return {"error": d.get("msg1", "조회 실패"), "rt_cd": d.get("rt_cd"), "raw": d}
         rows = []
-        for _, row in df.iterrows():
-            entry = {}
-            for col in df.columns:
-                v = row[col]
-                if hasattr(v, "item"):
-                    v = v.item()
-                entry[str(col)] = v
-            rows.append(entry)
-
+        for o in out[:top_n]:
+            rows.append({
+                "순위":          _i(o.get("data_rank")),
+                "종목코드":      o.get("mksc_shrn_iscd") or o.get("stck_shrn_iscd") or o.get("iscd"),
+                "종목명":        o.get("hts_kor_isnm"),
+                "현재가":        _i(o.get("stck_prpr")),
+                "등락률":        _f(o.get("prdy_ctrt")),
+                "시가총액_억원": _i(o.get("stck_avls")),
+                "거래량":        _i(o.get("acml_vol")),
+            })
         return {
-            "기준일":       date,
             "시장":         market,
             "상위N":        top_n,
             "데이터":       rows,
             "조회시각_KST": _now_kst(),
-            "데이터출처":   "pykrx (한국거래소)",
+            "데이터출처":   "KIS (한국투자증권) 순위분석",
         }
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
@@ -742,56 +760,76 @@ async def get_top_market_cap(date: str = "", top_n: int = 20, market: str = "KOS
 @mcp.tool()
 async def get_top_movers(date: str = "", top_n: int = 20, market: str = "KOSPI", direction: str = "up") -> dict:
     """
-    당일 등락률 상위(상승) 또는 하위(하락) 종목을 조회합니다 (pykrx).
+    등락률 상위(상승) 또는 하위(하락) 종목을 조회합니다 (KIS 순위분석, 실시간).
 
     Args:
-        date:      기준일 "YYYYMMDD" (기본: 가장 최근 거래일)
-        top_n:     조회할 종목 수 (기본 20, 최대 50)
-        market:    "KOSPI"(기본), "KOSDAQ", "KONEX"
+        date:      호환용 인자 (무시됨)
+        top_n:     조회할 종목 수 (기본 20, 최대 30)
+        market:    "KOSPI"(기본), "KOSDAQ", "전체"
         direction: "up"(상승, 기본) 또는 "down"(하락)
 
     Returns:
-        종목코드, 종목명, 현재가, 등락률, 거래량 등
+        순위, 종목코드, 종목명, 현재가, 등락률, 전일대비, 거래량
     """
-    import pykrx.stock as stock
-
-    if not date:
-        date = datetime.datetime.now(KST).strftime("%Y%m%d")
-    top_n = min(max(1, top_n), 50)
-
+    if not KIS_APP_KEY or not KIS_APP_SECRET:
+        return {"error": "KIS_APP_KEY/KIS_APP_SECRET 환경변수가 설정되지 않았습니다."}
+    top_n = min(max(1, top_n), 30)
+    iscd = {"KOSPI": "0001", "KOSDAQ": "1001", "전체": "0000", "ALL": "0000"}.get(
+        (market or "KOSPI"), "0001"
+    )
+    sort_code = "1" if str(direction).lower() == "down" else "0"
     try:
-        try:
-            _bd = await asyncio.to_thread(stock.get_nearest_business_day_in_a_week, date)
-            date = _bd or date
-        except Exception:
-            pass
-        df = await asyncio.to_thread(
-            stock.get_market_ohlcv_by_ticker, date, market=market
-        )
-        if df is None or df.empty:
-            return {"error": f"{date} {market} 등락률 스냅샷이 비어 있습니다. (KRX가 클라우드 IP에 시장 전체 스냅샷을 제공하지 않는 제약 — 종목별 시세/OHLCV 조회는 정상입니다)"}
-
-        ascending = direction.lower() == "down"
-        df = df.sort_values("등락률", ascending=ascending).head(top_n).reset_index()
-
+        token = await _kis_token()
+        headers = {
+            "authorization": f"Bearer {token}",
+            "appkey": KIS_APP_KEY,
+            "appsecret": KIS_APP_SECRET,
+            "tr_id": "FHPST01700000",
+            "custtype": "P",
+        }
+        params = {
+            "fid_cond_mrkt_div_code": "J",
+            "fid_cond_scr_div_code": "20170",
+            "fid_input_iscd": iscd,
+            "fid_rank_sort_cls_code": sort_code,
+            "fid_input_cnt_1": "0",
+            "fid_prc_cls_code": "0",
+            "fid_input_price_1": "",
+            "fid_input_price_2": "",
+            "fid_vol_cnt": "",
+            "fid_trgt_cls_code": "0",
+            "fid_trgt_exls_cls_code": "0",
+            "fid_div_cls_code": "0",
+            "fid_rsfl_rate1": "",
+            "fid_rsfl_rate2": "",
+        }
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{KIS_BASE}/uapi/domestic-stock/v1/ranking/fluctuation",
+                headers=headers, params=params,
+            )
+        d = r.json()
+        out = d.get("output") or []
+        if not out:
+            return {"error": d.get("msg1", "조회 실패"), "rt_cd": d.get("rt_cd"), "raw": d}
         rows = []
-        for _, row in df.iterrows():
-            entry = {}
-            for col in df.columns:
-                v = row[col]
-                if hasattr(v, "item"):
-                    v = v.item()
-                entry[str(col)] = v
-            rows.append(entry)
-
+        for o in out[:top_n]:
+            rows.append({
+                "순위":     _i(o.get("data_rank")),
+                "종목코드": o.get("stck_shrn_iscd") or o.get("mksc_shrn_iscd"),
+                "종목명":   o.get("hts_kor_isnm"),
+                "현재가":   _i(o.get("stck_prpr")),
+                "등락률":   _f(o.get("prdy_ctrt")),
+                "전일대비": _i(o.get("prdy_vrss")),
+                "거래량":   _i(o.get("acml_vol")),
+            })
         return {
-            "기준일":       date,
             "시장":         market,
-            "방향":         "상승" if direction.lower() == "up" else "하락",
+            "방향":         "하락" if sort_code == "1" else "상승",
             "상위N":        top_n,
             "데이터":       rows,
             "조회시각_KST": _now_kst(),
-            "데이터출처":   "pykrx (한국거래소)",
+            "데이터출처":   "KIS (한국투자증권) 순위분석",
         }
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
