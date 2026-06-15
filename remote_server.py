@@ -206,6 +206,72 @@ async def get_realtime_price(symbol: str) -> dict:
 
 
 @mcp.tool()
+async def get_overtime_price(symbol: str) -> dict:
+    """
+    한국 주식의 장후 시간외 단일가(16:00~18:00)를 조회합니다 (KIS Open API).
+
+    정규장 종가와 함께 시간외 단일가까지 반영해서 보고 싶을 때 사용합니다.
+    시간외 단일가 세션이 없는 시간대에는 값이 0 또는 직전 세션 값일 수 있습니다.
+
+    Args:
+        symbol: 6자리 종목코드 (예: "005930" 삼성전자)
+
+    Returns:
+        시간외 단일가 현재가/전일대비/등락률/거래량 등 (+ 전체 원본 필드)
+    """
+    if not KIS_APP_KEY or not KIS_APP_SECRET:
+        return {"error": "KIS_APP_KEY/KIS_APP_SECRET 환경변수가 설정되지 않았습니다."}
+    try:
+        token = await _kis_token()
+        headers = {
+            "authorization": f"Bearer {token}",
+            "appkey": KIS_APP_KEY,
+            "appsecret": KIS_APP_SECRET,
+            "tr_id": "FHPST02300000",
+            "custtype": "P",
+        }
+        params = {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": symbol}
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(
+                f"{KIS_BASE}/uapi/domestic-stock/v1/quotations/inquire-overtime-price",
+                headers=headers,
+                params=params,
+            )
+        d = r.json()
+        o = d.get("output") or {}
+        if not o:
+            return {"error": d.get("msg1", "조회 실패"), "rt_cd": d.get("rt_cd"), "raw": d}
+        sign = {"1": "상한", "2": "상승", "3": "보합", "4": "하한", "5": "하락"}
+
+        def pick(*keys):
+            for k in keys:
+                if o.get(k) not in (None, ""):
+                    return o.get(k)
+            return None
+
+        return {
+            "symbol":          symbol,
+            "name":            pick("hts_kor_isnm"),
+            "시간외단일가":    _i(pick("ovtm_untp_prpr", "stck_prpr")),
+            "전일대비":        _i(pick("ovtm_untp_prdy_vrss", "prdy_vrss")),
+            "등락":            sign.get(pick("ovtm_untp_prdy_vrss_sign", "prdy_vrss_sign"),
+                                       pick("ovtm_untp_prdy_vrss_sign", "prdy_vrss_sign")),
+            "등락률":          _f(pick("ovtm_untp_prdy_ctrt", "prdy_ctrt")),
+            "시간외_시가":     _i(pick("ovtm_untp_oprc")),
+            "시간외_고가":     _i(pick("ovtm_untp_hgpr")),
+            "시간외_저가":     _i(pick("ovtm_untp_lwpr")),
+            "시간외_거래량":   _i(pick("ovtm_untp_vol", "acml_vol")),
+            "시간외_거래대금": _i(pick("ovtm_untp_tr_pbmn", "acml_tr_pbmn")),
+            "정규장_종가":     _i(pick("stck_prpr")),
+            "조회시각_KST":    _now_kst(),
+            "데이터출처":      "KIS (한국투자증권) 시간외단일가",
+            "전체필드_raw":    o,
+        }
+    except Exception as e:
+        return {"error": f"{type(e).__name__}: {e}"}
+
+
+@mcp.tool()
 async def get_us_realtime_price(symbol: str, exchange: str = "auto") -> dict:
     """
     미국 주식의 현재가를 조회합니다 (KIS 해외주식 시세 API).
