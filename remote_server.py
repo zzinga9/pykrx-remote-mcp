@@ -986,17 +986,56 @@ async def get_fred_indicator(series_id: str, count: int = 12) -> dict:
 # ====================================================================
 
 ECOS_SERIES_MAP = {
-    "base_rate":    ("722Y001", "0101000",  "한국 기준금리 (%)"),
-    "cpi":          ("901Y009", "0",        "한국 소비자물가지수 (CPI, 전년동기비)"),
-    "gdp":          ("200Y002", "2111Q",    "한국 GDP 성장률 (전기비, %)"),
-    "m2":           ("101Y004", "BBHA00",   "한국 M2 통화량 (십억원)"),
-    "usd_krw":      ("731Y001", "0000001",  "원달러 환율 (종가, 원)"),
-    "trade_balance":("403Y004", "I50A",     "한국 무역수지 (백만달러)"),
-    "unemployment": ("901Y026", "L1100",    "한국 실업률 (%)"),
-    "production":   ("901Y019", "I16A",     "한국 산업생산지수 (전년비)"),
-    "10y_yield":    ("817Y002", "010200000","한국 국고채 10년 금리 (%)"),
-    "3y_yield":     ("817Y002", "010190000","한국 국고채 3년 금리 (%)"),
+    # shortname:   (stat_code,  item_code,   label,                         cycle)
+    "base_rate":    ("722Y001", "0101000",  "한국 기준금리 (%)",            "M"),
+    "cpi":          ("901Y009", "0",        "한국 소비자물가지수 (CPI)",     "M"),
+    "gdp":          ("200Y002", "1400",     "한국 실질 GDP 성장률 (전기대비, %)", "Q"),
+    "m2":           ("101Y003", "BBHA00",   "한국 M2 광의통화 (평잔, 십억원)",   "M"),
+    "usd_krw":      ("731Y001", "0000001",  "원/달러 환율 (종가, 원)",       "D"),
+    "trade_balance":("301Y013", "000000",   "한국 경상수지 (백만달러)",       "M"),
+    "unemployment": ("901Y027", "I61BC",    "한국 실업률 (%)",              "M"),
+    "production":   ("901Y019", "I16A",     "한국 산업생산지수",            "M"),
+    "10y_yield":    ("817Y002", "010200000","한국 국고채 10년 금리 (%)",      "D"),
+    "3y_yield":     ("817Y002", "010190000","한국 국고채 3년 금리 (%)",       "D"),
 }
+
+
+def _ecos_period(cycle: str, count: int):
+    """주기별 (검색시작, 검색종료) 문자열을 ECOS 포맷으로 반환."""
+    now = datetime.datetime.now(KST)
+    if cycle == "D":
+        end   = now.strftime("%Y%m%d")
+        start = (now - datetime.timedelta(days=count * 2 + 40)).strftime("%Y%m%d")
+    elif cycle == "Q":
+        q = (now.month - 1) // 3 + 1
+        end = f"{now.year}Q{q}"
+        tot = now.year * 4 + (q - 1) - (count + 2)
+        start = f"{tot // 4}Q{tot % 4 + 1}"
+    elif cycle == "A":
+        end   = f"{now.year}"
+        start = f"{now.year - (count + 1)}"
+    else:  # M
+        end = now.strftime("%Y%m")
+        tot = now.year * 12 + (now.month - 1) - (count + 6)
+        start = f"{tot // 12}{tot % 12 + 1:02d}"
+    return start, end
+
+
+async def _ecos_fetch(stat_code: str, item_code: str, cycle: str, count: int):
+    """단일 (통계코드/항목/주기) 조회 → (rows, body)."""
+    start, end = _ecos_period(cycle, count)
+    url = (
+        f"https://ecos.bok.or.kr/api/StatisticSearch"
+        f"/{ECOS_API_KEY}/json/kr/1/1000"
+        f"/{stat_code}/{cycle}/{start}/{end}/{item_code}"
+    )
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await client.get(url)
+    if r.status_code != 200:
+        return [], {"error": f"ECOS API 오류 {r.status_code}: {r.text[:200]}"}
+    body = r.json()
+    ss = body.get("StatisticSearch") or {}
+    return (ss.get("row") or []), body
 
 
 @mcp.tool()
@@ -1005,10 +1044,11 @@ async def get_ecos_indicator(series_id: str, count: int = 12) -> dict:
     한국은행 경제통계시스템(ECOS)에서 거시경제 지표를 조회합니다.
 
     Args:
-        series_id: ECOS 단축명 또는 "통계코드 항목코드" 형식.
+        series_id: ECOS 단축명 또는 "통계코드/항목코드[/주기]" 형식.
             단축명: base_rate, cpi, gdp, m2, usd_krw, trade_balance,
                    unemployment, production, 10y_yield, 3y_yield
-            직접 입력: "722Y001/0101000" (통계코드/항목코드)
+            직접 입력: "722Y001/0101000" 또는 "731Y001/0000001/D"
+                       (주기 D=일 M=월 Q=분기 A=년; 생략 시 자동 탐색)
         count: 반환할 최근 데이터 개수 (기본 12)
 
     Returns:
@@ -1024,80 +1064,71 @@ async def get_ecos_indicator(series_id: str, count: int = 12) -> dict:
 
     sid = series_id.strip()
     label = sid
+    cycle = None
 
     if sid in ECOS_SERIES_MAP:
-        stat_code, item_code, label = ECOS_SERIES_MAP[sid]
+        stat_code, item_code, label, cycle = ECOS_SERIES_MAP[sid]
     elif "/" in sid:
-        parts = sid.split("/", 1)
-        stat_code, item_code = parts[0].strip(), parts[1].strip()
+        parts = [x.strip() for x in sid.split("/")]
+        stat_code, item_code = parts[0], parts[1]
+        if len(parts) >= 3 and parts[2]:
+            cycle = parts[2].upper()
     else:
         return {
             "error": f"알 수 없는 series_id: '{sid}'",
             "사용가능_단축명": list(ECOS_SERIES_MAP.keys()),
-            "직접입력_예시": "722Y001/0101000",
+            "직접입력_예시": "722Y001/0101000 또는 731Y001/0000001/D",
         }
 
     count = min(max(1, count), 100)
-    end_date   = datetime.datetime.now(KST).strftime("%Y%m")
-    start_year = datetime.datetime.now(KST).year - max(5, count // 2)
-    start_date = f"{start_year}01"
 
+    # 지정 주기 우선, 실패 시 나머지 주기 자동 탐색
+    order = [cycle] if cycle else []
+    for c in ("M", "D", "Q", "A"):
+        if c not in order:
+            order.append(c)
+
+    rows, last_body, used_cycle = [], None, None
     try:
-        url = (
-            f"https://ecos.bok.or.kr/api/StatisticSearch"
-            f"/{ECOS_API_KEY}/json/kr/1/1000"
-            f"/{stat_code}/M/{start_date}/{end_date}/{item_code}"
-        )
-        async with httpx.AsyncClient(timeout=20) as client:
-            r = await client.get(url)
-
-        if r.status_code != 200:
-            return {"error": f"ECOS API 오류 {r.status_code}: {r.text[:300]}"}
-
-        body = r.json()
-        stat_search = body.get("StatisticSearch") or {}
-        err = stat_search.get("RESULT")
-        if err and err.get("CODE", "").startswith("INFO-"):
-            url2 = (
-                f"https://ecos.bok.or.kr/api/StatisticSearch"
-                f"/{ECOS_API_KEY}/json/kr/1/1000"
-                f"/{stat_code}/A/{start_date[:4]}/{end_date[:4]}/{item_code}"
-            )
-            async with httpx.AsyncClient(timeout=20) as client:
-                r = await client.get(url2)
-            body = r.json()
-            stat_search = body.get("StatisticSearch") or {}
-
-        rows = stat_search.get("row") or []
-        if not rows:
-            return {
-                "error":  "데이터가 없습니다. 통계코드/항목코드/기간을 확인하세요.",
-                "raw":    body,
-            }
-
-        data = []
-        for row in rows[-count:]:
-            data.append({
-                "날짜": row.get("TIME"),
-                "값":   _f(row.get("DATA_VALUE")),
-                "단위": row.get("UNIT_NAME"),
-            })
-        data.reverse()
-
-        unit = rows[0].get("UNIT_NAME", "") if rows else ""
-        stat_name = rows[0].get("STAT_NAME", label) if rows else label
-        item_name = rows[0].get("ITEM_NAME1", "") if rows else ""
-
-        return {
-            "series_id":    f"{stat_code}/{item_code}",
-            "지표명":       label if label != sid else f"{stat_name} - {item_name}",
-            "단위":         unit,
-            "데이터":       data,
-            "조회시각_KST": _now_kst(),
-            "데이터출처":   "ECOS (한국은행 경제통계시스템)",
-        }
+        for c in order:
+            try:
+                rows, last_body = await _ecos_fetch(stat_code, item_code, c, count)
+            except Exception:
+                rows = []
+            if rows:
+                used_cycle = c
+                break
     except Exception as e:
         return {"error": f"{type(e).__name__}: {e}"}
+
+    if not rows:
+        return {
+            "error": "데이터가 없습니다. 통계코드/항목코드/주기를 확인하세요.",
+            "raw":   last_body,
+        }
+
+    data = []
+    for row in rows[-count:]:
+        data.append({
+            "날짜": row.get("TIME"),
+            "값":   _f(row.get("DATA_VALUE")),
+            "단위": row.get("UNIT_NAME"),
+        })
+    data.reverse()
+
+    unit      = rows[0].get("UNIT_NAME", "")
+    stat_name = rows[0].get("STAT_NAME", label)
+    item_name = rows[0].get("ITEM_NAME1", "")
+
+    return {
+        "series_id":    f"{stat_code}/{item_code}",
+        "주기":         used_cycle,
+        "지표명":       label if label != sid else f"{stat_name} - {item_name}",
+        "단위":         unit,
+        "데이터":       data,
+        "조회시각_KST": _now_kst(),
+        "데이터출처":   "ECOS (한국은행 경제통계시스템)",
+    }
 
 
 # ====================================================================
